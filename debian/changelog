@@ -1,3 +1,11 @@
+automx (0.10.0-2.1) unstable; urgency=low
+
+  * Non-maintainer upload
+  * Add modernizr-2.6.2.js to debian/missing-sources. (Closes: #752220)
+  * Add lintian overrides for source-is-missing false positives.
+
+ -- Axel Beckert <abe@debian.org>  Sun, 28 Sep 2014 00:34:27 +0200
+
 automx (0.10.0-2) unstable; urgency=low
 
   * Fixed control fields, added Vcs field

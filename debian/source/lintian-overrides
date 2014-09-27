@@ -1,0 +1,6 @@
+# Source is in src/html/js/foundation/
+automx source: source-is-missing src/html/js/foundation.min.js
+
+# Source is in debian/missing-sources/modernizr-2.6.2.js
+automx source: source-is-missing src/foundation-scss/javascripts/vendor/custom.modernizr.js
+automx source: source-is-missing src/html/js/vendor/custom.modernizr.js
