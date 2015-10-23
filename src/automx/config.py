@@ -16,7 +16,7 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
-__version__ = '0.10.0'
+__version__ = '0.10.2'
 __author__ = "Christian Roessner, Patrick Ben Koetter"
 __copyright__ = "Copyright (c) 2011-2013 [*] sys4 AG"
 
@@ -27,11 +27,16 @@ import subprocess
 import shlex
 import StringIO
 import re
-import memcache
 import logging
+import ipaddr
+
+try:
+    import memcache
+    use_memcache = True
+except ImportError:
+    use_memcache = False
 
 from ConfigParser import NoOptionError, NoSectionError
-from ipaddr import IPAddress, IPNetwork
 from dateutil import parser
 
 try:
@@ -43,6 +48,9 @@ except:
 
 
 class DataNotFoundException(Exception):
+    pass
+
+class ConfigNotFoundException(Exception):
     pass
 
 
@@ -98,7 +106,20 @@ class Config(object, ConfigParser.RawConfigParser):
         ConfigParser.RawConfigParser.__init__(self,
                                             defaults=None,
                                             dict_type=OrderedDict)
-        self.read("/etc/automx.conf")
+
+        found_conf = False
+        conf_files = list(["/usr/local/etc/automx.conf", "/etc/automx.conf"])
+
+        for conf in iter(conf_files):
+            if os.path.exists(conf):
+                found_conf = True
+                break
+
+        if not found_conf:
+            raise ConfigNotFoundException("No configuration files found:"
+                                          "%s, %s" %
+                                          (conf_files[0], conf_files[1]))
+        self.read(conf)
 
         if not self.has_section("automx"):
             raise Exception("Missing section 'automx'")
@@ -116,6 +137,19 @@ class Config(object, ConfigParser.RawConfigParser):
             
         self.memcache = Memcache(self, environ)
         
+        # defaults
+        self.__emailaddress = ""
+        self.__cn = ""
+        self.__password = ""
+        self.__search_domain = ""
+        self.__automx = dict()
+
+        # domain individual settings (overwrites some or all defaults)
+        self.__domain = OrderedDict()
+
+        # if we use dynamic backends, we might earn variables
+        self.__vars = dict()
+        
     def configure(self, emailaddress, cn=None, password=None):
         if emailaddress is None:
             return OrderedDict()
@@ -124,27 +158,14 @@ class Config(object, ConfigParser.RawConfigParser):
         self.__emailaddress = emailaddress
         
         # Mobileconfig
-        if cn is None:
-            self.__cn = ""
-        else:
+        if cn is not None:
             self.__cn = cn
-        if password is None:
-            self.__password = ""
-        else:
+        if password is not None:
             self.__password = password
         
-        domain = emailaddress.split("@")[1]
-
         # The domain that is searched in the config file
+        domain = emailaddress.split("@")[1]
         self.__search_domain = domain
-        
-        self.__automx = dict()
-
-        # domain individual settings (overwrites some or all defaults)
-        self.__domain = OrderedDict()
-        
-        # if we use dynamic backends, we might earn variables
-        self.__vars = dict()
         
         try:
             provider = self.get("automx", "provider")
@@ -833,16 +854,20 @@ class Memcache(object):
         self.__environ = environ
                 
         # Memcache usage is optional
-        self.__has_memcache = True
+        self.__has_memcache = use_memcache
 
         self.__found = False
         self.__client = None
         self.__current = 0
         
         try:
-            self.__mc = memcache.Client([config.get("automx", "memcache")])
+            if use_memcache:
+                self.__mc = memcache.Client([config.get("automx", "memcache")])
         except ValueError, e:
             logging.warning("Memcache misconfigured: ", e)
+            self.__has_memcache = False
+        except NoOptionError:
+            logging.warning("Not using Memcache")
             self.__has_memcache = False
 
     def counter(self):
@@ -876,7 +901,12 @@ class Memcache(object):
         self.__client = self.__environ["REMOTE_ADDR"]
 
         if self.__is_trusted_network():
+            if self.__config.debug:
+                logging.debug("TRUSTED %s" % self.__client)
             return True
+        else:
+            if self.__config.debug:
+                logging.debug("NOT TRUSTED %s" % self.__client)
         
         if self.__config.has_option("automx", "client_error_limit"):
             try:
@@ -909,9 +939,16 @@ class Memcache(object):
             networks = ("127.0.0.1", "::1/128")
         
         for network in iter(networks):
-            if IPAddress(self.__client) in IPNetwork(network):
+            a = ipaddr.IPAddress(self.__client)
+            n = ipaddr.IPNetwork(network)
+            if n.Contains(a):
+                if self.__config.debug:
+                    logging.debug("FOUND %s, %s" % (a, n))
                 return True
-        
+            else:
+                if self.__config.debug:
+                    logging.debug("NOT FOUND %s, %s" % (a, n))
+
         return False
 
 # vim: expandtab ts=4 sw=4

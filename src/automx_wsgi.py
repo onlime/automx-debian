@@ -16,7 +16,7 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
-__version__ = '0.10.0'
+__version__ = '0.10.2'
 __author__ = "Christian Roessner, Patrick Ben Koetter"
 __copyright__ = "Copyright (c) 2011-2013 [*] sys4 AG"
 
@@ -29,7 +29,8 @@ from cStringIO import StringIO
 from lxml import etree
 from lxml.etree import XMLSyntaxError
 
-from automx.config import Config, DataNotFoundException
+from automx.config import Config
+from automx.config import DataNotFoundException, ConfigNotFoundException
 from automx.view import View
 
 
@@ -53,18 +54,19 @@ def application(environ, start_response):
 
     try:
         data = Config(environ)
-    except:
+    except Exception, e:
         process = False
         status = STAT_ERR
-    
-    try:
-        logging.basicConfig(filename=data.logfile,
-                            format='%(asctime)s %(levelname)s: %(message)s',
-                            level=logging.DEBUG)
-    except IOError, e:
         print >> environ["wsgi.errors"], e
-  
+    
     if process:
+        try:
+            logging.basicConfig(filename=data.logfile,
+                                format='%(asctime)s %(levelname)s: %(message)s',
+                                level=logging.DEBUG)
+        except IOError, e:
+            print >> environ["wsgi.errors"], e
+  
         request_method = environ['REQUEST_METHOD']
         request_method = escape(request_method)
     
@@ -117,18 +119,20 @@ def application(environ, start_response):
                         subschema = "mobile"
                     elif "/outlook/" in response_schema[0].text:
                         subschema = "outlook"
+                    else:
+                        process = False
+                        status = STAT_ERR
         
                     emailaddresses = root.xpath(expr, name="EMailAddress")
                     if len(emailaddresses) == 0:
-                        logging.warning("Error in XML request")
+                        logging.warning("Error in autodiscover request!")
                         process = False
                         status = STAT_ERR
                         data.memcache.set_client()
                     else:
                         emailaddress = emailaddresses[0].text
                         schema = "autodiscover"
-                
-                status = STAT_OK
+                        status = STAT_OK
     
             else:
                 # We did not receive XML, so it might be a mobileconfig request
@@ -155,6 +159,8 @@ def application(environ, start_response):
                                 status = STAT_OK
                                 schema = "mobileconfig"
                             else:
+                                logging.warning("Error in mobileconfig "
+                                                "request!")
                                 process = False
                                 status = STAT_ERR
                         else:
@@ -179,20 +185,22 @@ def application(environ, start_response):
                 qs = environ['QUERY_STRING']
                 d = parse_qs(qs)
             
+                if data.debug:
+                    logging.debug("Request GET: QUERY_STRING: %s" % qs)
+
                 if d is not None:
-                    emailaddress = d.get("emailaddress")[0]
-                    if emailaddress is None:
+                    if d.has_key("emailaddress"):
+                        emailaddress = d.get("emailaddress")[0]
+                        emailaddress.strip()
+                        status = STAT_OK
+                        schema = "autoconfig"
+                    else:
+                        logging.warning("Error in autoconfig request!")
                         process = False
                         status = STAT_ERR
-                    else:
-                        schema = "autoconfig"
-                        
-                    if data.debug:
-                        logging.debug("Request GET: QUERY_STRING: %s" % qs)
-            
-                    status = STAT_OK
                 else:
-                    logging.debug("Request GET: QUERY_STRING failed!")
+                    logging.error("Request GET: QUERY_STRING failed!")
+                    process = False
                     status = STAT_ERR
 
     if process:
@@ -238,13 +246,14 @@ def application(environ, start_response):
                 logging.error("view.render(): %s" % e)
             status = STAT_ERR
 
-    if data.debug:
-        if (schema == "mobileconfig" and
-            data.domain.has_key("sign_mobileconfig") and
-            data.domain["sign_mobileconfig"] is True):
-            logging.debug("No debugging output for signed mobileconfig!")
-        else:
-            logging.debug("Response:\n" + response_body)
+    if process:
+        if data.debug:
+            if (schema == "mobileconfig" and
+                data.domain.has_key("sign_mobileconfig") and
+                data.domain["sign_mobileconfig"] is True):
+                logging.debug("No debugging output for signed mobileconfig!")
+            else:
+                logging.debug("Response:\n" + response_body)
 
     if schema in ('autoconfig', "autodiscover"):
         response_headers = [('Content-Type', 'text/xml'),
