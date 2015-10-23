@@ -1,3 +1,13 @@
+automx (0.10.2-0.1) UNRELEASED; urgency=medium
+
+  * Non-maintainer upload
+  * Import new upstream release.
+    + Drop patch fix-automx-test-install.patch, applied upstream.
+    + Fixes typo in BASIC_CONFIGURATION_README. (Closes: #762093)
+    + Drop dependency on python-memcache.
+
+ -- Axel Beckert <abe@debian.org>  Fri, 23 Oct 2015 20:31:50 +0200
+
 automx (0.10.0-2.1) unstable; urgency=low
 
   * Non-maintainer upload

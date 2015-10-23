@@ -15,7 +15,6 @@ Depends: libapache2-mod-wsgi | httpd-wsgi,
          python-ipaddr,
          python-lxml,
          python-m2crypto,
-         python-memcache,
          ${misc:Depends},
          ${python:Depends}
 Recommends: python-ldap | python-sqlalchemy
