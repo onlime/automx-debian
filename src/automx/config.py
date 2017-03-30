@@ -15,46 +15,58 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
-
-__version__ = '0.10.2'
-__author__ = "Christian Roessner, Patrick Ben Koetter"
-__copyright__ = "Copyright (c) 2011-2013 [*] sys4 AG"
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+from __future__ import unicode_literals
 
 import os
 import sys
-import ConfigParser
-import subprocess
 import shlex
-import StringIO
 import re
 import logging
-import ipaddr
+# noinspection PyCompatibility
+import ipaddress
 
 try:
+    import configparser
+except ImportError:
+    # noinspection PyPep8Naming
+    import ConfigParser as configparser
+
+try:
+    # noinspection PyUnresolvedReferences
     import memcache
+
     use_memcache = True
 except ImportError:
     use_memcache = False
 
-from ConfigParser import NoOptionError, NoSectionError
+# noinspection PyCompatibility
+from configparser import NoOptionError, NoSectionError
 from dateutil import parser
+from collections import OrderedDict
+# noinspection PyCompatibility
+from builtins import dict, int, str
 
-try:
-    # Python 2.7
-    from collections import OrderedDict
-except:
-    # Python 2.5 up to Python 2.7
-    from automx.ordereddict import OrderedDict
+
+__version__ = '1.1.1'
+__author__ = "Christian Roessner, Patrick Ben Koetter"
+__copyright__ = "Copyright (c) 2011-2015 [*] sys4 AG"
+
+# List of boolean words that have the meaning "true"
+TRUE = ('1', 'y', 'yes', 't', 'true', 'on')
 
 
 class DataNotFoundException(Exception):
     pass
 
+
 class ConfigNotFoundException(Exception):
     pass
 
 
-class Config(object, ConfigParser.RawConfigParser):
+class Config(configparser.RawConfigParser):
     """
     This class creates the internal data structure that is completely
     independend from the view. It may query different backends to gather all
@@ -102,14 +114,17 @@ class Config(object, ConfigParser.RawConfigParser):
     may contain variables, which, if found in the vars-dictionary, are used.
     
     """
+
     def __init__(self, environ):
-        ConfigParser.RawConfigParser.__init__(self,
-                                            defaults=None,
-                                            dict_type=OrderedDict)
+        # noinspection PyCallByClass,PyTypeChecker
+        configparser.RawConfigParser.__init__(self,
+                                              defaults=None,
+                                              dict_type=OrderedDict)
 
         found_conf = False
         conf_files = list(["/usr/local/etc/automx.conf", "/etc/automx.conf"])
 
+        conf = None
         for conf in iter(conf_files):
             if os.path.exists(conf):
                 found_conf = True
@@ -124,7 +139,6 @@ class Config(object, ConfigParser.RawConfigParser):
         if not self.has_section("automx"):
             raise Exception("Missing section 'automx'")
 
-
         if self.has_option("automx", "logfile"):
             self.logfile = self.get("automx", "logfile")
         else:
@@ -134,9 +148,15 @@ class Config(object, ConfigParser.RawConfigParser):
             self.debug = self.getboolean("automx", "debug")
         else:
             self.debug = False
-            
+
+        # We need a home directory for the OpenSSL-rand file
+        if self.has_option("automx", "homedir"):
+            os.environ["HOME"] = self.get("automx", "homedir")
+        else:
+            os.environ["HOME"] = "/var/automx"
+
         self.memcache = Memcache(self, environ)
-        
+
         # defaults
         self.__emailaddress = ""
         self.__cn = ""
@@ -149,27 +169,27 @@ class Config(object, ConfigParser.RawConfigParser):
 
         # if we use dynamic backends, we might earn variables
         self.__vars = dict()
-        
+
     def configure(self, emailaddress, cn=None, password=None):
         if emailaddress is None:
             return OrderedDict()
 
         # Full email address containing local part _and_ domain
         self.__emailaddress = emailaddress
-        
+
         # Mobileconfig
         if cn is not None:
             self.__cn = cn
         if password is not None:
             self.__password = password
-        
+
         # The domain that is searched in the config file
         domain = emailaddress.split("@")[1]
         self.__search_domain = domain
-        
+
         try:
             provider = self.get("automx", "provider")
-            
+
             # provider must be a domainname
             pattern = "^[0-9a-zA-Z.-]+[a-zA-Z]{2,9}$"
             prog = re.compile(pattern)
@@ -179,16 +199,21 @@ class Config(object, ConfigParser.RawConfigParser):
             else:
                 logging.error("<provider> setting broken!")
                 self.__automx["provider"] = "provider.broken"
-            
+
             tmp = self.create_list(self.get("automx", "domains"))
-            self.__automx["domains"] = tmp 
+            self.__automx["domains"] = tmp
         except TypeError:
             raise Exception("Missing options in section automx")
+
+        try:
+            self.__automx["openssl"] = self.get("automx", "openssl")
+        except (NoSectionError, NoOptionError):
+            self.__automx["openssl"] = "/usr/bin/openssl"
 
         # if a domain has its own section, use settings from it
         cmp_domains = [dom.lower() for dom in self.__automx["domains"]]
         if (domain.lower() in iter(cmp_domains) or
-            self.__automx["domains"][0] == "*"):
+                self.__automx["domains"][0] == "*"):
             cmp_sections = [dom.lower() for dom in self.sections()]
             if domain.lower() in iter(cmp_sections):
                 self.__eval_options(domain)
@@ -205,16 +230,16 @@ class Config(object, ConfigParser.RawConfigParser):
 
         settings["domain"] = self.__search_domain
         settings["emailaddress"] = self.__emailaddress
-        
+
         section = self.__find_section(section)
-        
+
         if self.has_option(section, "backend"):
             if backend is None:
                 try:
                     backend = self.get(section, "backend")
                 except NoOptionError:
                     raise Exception("Missing option <backend>")
-                
+
             if backend in ("static", "static_append"):
                 for opt in iter(self.options(section)):
                     if opt in ("action",
@@ -237,10 +262,10 @@ class Config(object, ConfigParser.RawConfigParser):
                     elif opt == "sign_mobileconfig":
                         try:
                             settings[opt] = self.getboolean(section, opt)
-                        except:
+                        except (NoSectionError, NoOptionError, ValueError):
                             logging.error("%s is not boolean!" % opt)
                             settings[opt] = False
-                    elif opt in ("sign_cert", "sign_key"):
+                    elif opt in ("sign_cert", "sign_key", "sign_more_certs"):
                         result = self.get(section, opt)
                         if os.path.exists(result):
                             settings[opt] = result
@@ -248,10 +273,10 @@ class Config(object, ConfigParser.RawConfigParser):
                             logging.error("%s cannot read %s" % (opt, result))
                     else:
                         pass
-                    
+
                     if opt in ("smtp", "imap", "pop"):
                         if backend == "static_append":
-                            if settings.has_key(opt):
+                            if opt in settings:
                                 if self.debug:
                                     logging.debug("APPEND %s" % service)
                                 settings[opt].append(service)
@@ -283,22 +308,22 @@ class Config(object, ConfigParser.RawConfigParser):
                 except:
                     raise Exception("python ldap missing")
 
-                ldap_cfg = dict(host = "ldap://127.0.0.1/",
-                                base = "",
-                                bindmethod = "simple",
-                                binddn = None,
-                                bindpw = None,
-                                saslmech = None,
-                                authzid = "",
-                                filter = "(objectClass=*)",
-                                result_attrs = [],
-                                scope = "sub",
-                                usetls = "no",
-                                cipher = "TLSv1",
-                                reqcert ="never",
-                                cert = None,
-                                key = None,
-                                cacert = None)
+                ldap_cfg = dict(host="ldap://127.0.0.1/",
+                                base="",
+                                bindmethod="simple",
+                                binddn=None,
+                                bindpw=None,
+                                saslmech=None,
+                                authzid="",
+                                filter="(objectClass=*)",
+                                result_attrs=[],
+                                scope="sub",
+                                usetls="no",
+                                cipher="TLSv1",
+                                reqcert="never",
+                                cert=None,
+                                key=None,
+                                cacert=None)
 
                 tls = False
                 sasl = False
@@ -321,14 +346,15 @@ class Config(object, ConfigParser.RawConfigParser):
                                "key",
                                "cacert"):
                         result = self.get(section, opt)
-                        
+
                         if opt in ("host", "result_attrs"):
                             result = self.create_list(result)
-                            
+
                         ldap_cfg[opt] = result
-                
+
                 # Do we connect with TLS?
-                if ldap_cfg["usetls"].lower() in ("yes", "true", "1"):
+                reqcert = None
+                if ldap_cfg["usetls"].strip().lower() in TRUE:
                     if ldap_cfg["reqcert"] in ("never",
                                                "allow",
                                                "try",
@@ -358,28 +384,29 @@ class Config(object, ConfigParser.RawConfigParser):
                                         ldap_cfg["key"])
 
                     tls = True
-        
+
                 # Are we SASL binding to our servers?
+                auth_tokens = None
                 if ldap_cfg["bindmethod"] == "sasl":
                     mech = ldap_cfg["saslmech"]
 
                     if mech is not None:
                         if mech.lower() == "digest-md5":
                             auth_tokens = ldap.sasl.digest_md5(
-                                                        ldap_cfg["binddn"],
-                                                        ldap_cfg["bindpw"])
+                                ldap_cfg["binddn"],
+                                ldap_cfg["bindpw"])
                         elif mech.lower() == "cram-md5":
                             auth_tokens = ldap.sasl.cram_md5(
-                                                        ldap_cfg["binddn"],
-                                                        ldap_cfg["bindpw"])
+                                ldap_cfg["binddn"],
+                                ldap_cfg["bindpw"])
                         elif mech.lower() == "external":
                             auth_tokens = ldap.sasl.external(
-                                                        ldap_cfg["authzid"])
+                                ldap_cfg["authzid"])
                         elif mech.lower() == "gssapi":
                             auth_tokens = ldap.sasl.gssapi(ldap_cfg["authzid"])
 
                     sasl = True
-        
+
                 con = None
 
                 for server in iter(ldap_cfg["host"]):
@@ -392,11 +419,12 @@ class Config(object, ConfigParser.RawConfigParser):
                         else:
                             con.simple_bind_s(ldap_cfg["binddn"],
                                               ldap_cfg["bindpw"])
-                    except Exception, e:
+                    except Exception as e:
                         logging.error("LDAP: %s" % e)
                         continue
                     break
 
+                scope = None
                 if con is not None:
                     if ldap_cfg["scope"] in ("sub", "subtree"):
                         scope = ldap.SCOPE_SUBTREE
@@ -405,51 +433,51 @@ class Config(object, ConfigParser.RawConfigParser):
                     elif ldap_cfg["scope"] in ("base", "exact"):
                         scope = ldap.SCOPE_BASE
 
-                    filter = self.__replace_makro(ldap_cfg["filter"])
-                                            
+                    s_filter = self.__replace_makro(ldap_cfg["filter"])
+
                     rid = con.search(ldap_cfg["base"],
                                      scope,
-                                     filter,
+                                     s_filter,
                                      ldap_cfg["result_attrs"])
-            
-                    raw_res = (None, None)
+
                     raw_res = con.result(rid, True, 60)
-                    if raw_res[0] == None:
+                    if raw_res[0] is None:
                         con.abandon(rid)
                         raise Exception("LDAP server timeout reached")
 
                     # connection established, we have results
                     self.__vars = dict()
-                    
+
                     # we did not receive data from LDAP
-                    if raw_res[1] != []:
+                    if raw_res[1]:
                         for entry in raw_res[1]:
-                            for key, value in entry[1].items():
+                            for key, value in list(entry[1].items()):
                                 # result attributes might be multi values, but
                                 # we only accept the first value.
-                                self.__vars[key] = unicode(value[0], "utf-8")
+                                self.__vars[key] = str(value[0].decode("utf-8"))
                     else:
                         logging.warning("No LDAP result from server!")
                         raise DataNotFoundException
 
-                    try:    
+                    try:
                         con.unbind()
-                    except ldap.LDAPError, e:
+                    except ldap.LDAPError:
                         pass
 
                 if backend == "ldap":
                     self.__eval_options(section, backend="static")
                 else:
                     self.__eval_options(section, backend="static_append")
-            
+
             elif backend in ("sql", "sql_append"):
                 try:
+                    # noinspection PyPackageRequirements
                     from sqlalchemy.engine import create_engine
                 except:
                     raise Exception("python sqlalchemy missing")
 
-                sql_cfg = dict(host = None, query = "", result_attrs = [])
-                
+                sql_cfg = dict(host=None, query="", result_attrs=[])
+
                 for opt in iter(self.options(section)):
                     if opt in ("host", "result_attrs"):
                         result = self.create_list(self.get(section, opt))
@@ -460,18 +488,18 @@ class Config(object, ConfigParser.RawConfigParser):
                     sql_cfg["query"] = self.__replace_makro(query)
                 else:
                     raise Exception("Missing option <query>")
-                
+
                 for con in iter(sql_cfg["host"]):
                     try:
                         engine = create_engine(con)
                         connection = engine.connect()
-                    except Exception, e:
+                    except Exception as e:
                         logging.error("SQL: %s" % e)
                         continue
-                    
+
                     result = connection.execute(sql_cfg["query"])
                     for row in result:
-                        keys = row.keys()
+                        keys = list(row.keys())
                         for key in iter(keys):
                             if key in iter(sql_cfg["result_attrs"]):
                                 self.__vars[key] = row[key]
@@ -484,7 +512,7 @@ class Config(object, ConfigParser.RawConfigParser):
                         raise DataNotFoundException
 
                     connection.close()
-                    
+
                     break
 
                 if backend == "sql":
@@ -497,7 +525,7 @@ class Config(object, ConfigParser.RawConfigParser):
                     if opt in ("autoconfig", "autodiscover", "mobileconfig"):
                         tmp = self.get(section, opt)
                         result = self.__expand_vars(tmp)
-                        
+
                         if os.path.exists(result):
                             settings[opt] = result
 
@@ -518,11 +546,11 @@ class Config(object, ConfigParser.RawConfigParser):
                 else:
                     raise Exception("Missing option <result_attrs>")
 
-                seperator = None
-                if self.has_option(section, "seperator"):
-                    seperator = self.get(section, "seperator")
+                separator = None
+                if self.has_option(section, "separator"):
+                    separator = self.get(section, "separator")
 
-                cmd = shlex.split(self.get(section, "script"))
+                cmd = shlex.split(script_args)
                 for i, item in enumerate(cmd):
                     cmd[i] = self.__replace_makro(item)
 
@@ -530,6 +558,8 @@ class Config(object, ConfigParser.RawConfigParser):
                 pipe_in, pipe_out = os.pipe()
                 pid = os.fork()
 
+                recv = None
+                result = None
                 if pid == 0:
                     # child
                     os.close(pipe_in)
@@ -537,7 +567,7 @@ class Config(object, ConfigParser.RawConfigParser):
 
                     os.execvp(cmd[0], cmd)
 
-                    raise Exception("ERROR in execvp()" )
+                    raise Exception("ERROR in execvp()")
                 elif pid > 0:
                     # parent
                     os.close(pipe_out)
@@ -546,16 +576,16 @@ class Config(object, ConfigParser.RawConfigParser):
                     result = os.waitpid(pid, 0)
 
                 # check return code
-                if result[1] != 0:
+                if result[1]:
                     raise Exception("ERROR while calling script",
                                     result,
                                     recv.strip())
 
                 if len(recv) == 0:
-                     logging.warning("No result from script!")
-                     raise DataNotFoundException
+                    logging.warning("No result from script!")
+                    raise DataNotFoundException
 
-                result = recv.strip().split(seperator, len(result_attrs))
+                result = recv.strip().split(separator, len(result_attrs))
 
                 for i in range(min(len(result_attrs), len(result))):
                     self.__vars[result_attrs[i]] = result[i].strip()
@@ -564,32 +594,32 @@ class Config(object, ConfigParser.RawConfigParser):
                     self.__eval_options(section, backend="static")
                 else:
                     self.__eval_options(section, backend="static_append")
-                            
-            ### backends beyond this line do not have a follow option ###
+
+            # backends beyond this line do not have a follow option #
 
             elif backend == "filter":
                 if self.has_option(section, "section_filter"):
                     tmp = self.create_list(self.get(section, "section_filter"))
                     special_opts = tmp
-                    
+
                     got_data = False
-                    
+
                     for special_opt in iter(special_opts):
                         if self.has_option(section, special_opt):
-                            cmd = shlex.split(self.get(section, special_opt)) 
+                            cmd = shlex.split(self.get(section, special_opt))
                             for i, item in enumerate(cmd):
                                 cmd[i] = self.__replace_makro(item)
 
                             stdout_fd = sys.__stdout__.fileno()
-                            
+
                             pipe_in, pipe_out = os.pipe()
-                            
+
                             pid = os.fork()
                             if pid == 0:
                                 # child
                                 os.close(pipe_in)
                                 os.dup2(pipe_out, stdout_fd)
-                                
+
                                 os.execvp(cmd[0], cmd)
 
                                 raise Exception("ERROR in execvp()")
@@ -597,11 +627,11 @@ class Config(object, ConfigParser.RawConfigParser):
                                 # parent
                                 os.close(pipe_out)
                                 recv = os.read(pipe_in, 1024)
-                                    
+
                                 result = os.waitpid(pid, 0)
                             else:
                                 continue
-                            
+
                             # check return code
                             if result[1] != 0:
                                 raise Exception("ERROR while calling filter",
@@ -617,9 +647,9 @@ class Config(object, ConfigParser.RawConfigParser):
                             if self.debug:
                                 logging.debug("Email address from filter: %s"
                                               % new_emailaddress)
-                            
+
                             got_data = True
-                            
+
                             # we replace our search_domain 
                             self.__search_domain = special_opt
                             self.__emailaddress = new_emailaddress
@@ -627,17 +657,17 @@ class Config(object, ConfigParser.RawConfigParser):
                             # recurse again, because we now have a new section
                             # that we need to scan
                             self.__eval_options(special_opt)
-                            
+
                             # we already got a result. Do not continue!
                             break
-                
+
                     if not got_data:
                         raise DataNotFoundException
-            
+
             elif backend == "global":
                 if self.has_section("global"):
                     self.__eval_options("global")
-                    settings = self.__replace_makro(settings)
+                    self.__replace_makro(settings)
                 else:
                     raise Exception("Missing section 'global'")
 
@@ -650,23 +680,24 @@ class Config(object, ConfigParser.RawConfigParser):
 
         proto_settings = OrderedDict()
 
-        if self.getboolean(section, service) == True:
+        if (self.__expand_vars(self.get(section, service)).strip().lower() in
+                TRUE):
             if self.has_option(section, service + "_server"):
                 opt = service + "_server"
                 result = self.__expand_vars(self.get(section, opt))
 
-                proto_settings[opt] = result
-                
+                proto_settings[opt] = self.__replace_makro(result)
+
             if self.has_option(section, service + "_port"):
                 opt = service + "_port"
                 result = self.__expand_vars(self.get(section, opt))
-                
+
                 proto_settings[opt] = result
-                
+
             if self.has_option(section, service + "_encryption"):
                 opt = service + "_encryption"
                 result = self.__expand_vars(self.get(section, opt))
-                
+
                 if result.lower() == "none":
                     result = "none"
                 elif result.lower() == "ssl":
@@ -675,13 +706,13 @@ class Config(object, ConfigParser.RawConfigParser):
                     result = "starttls"
                 elif result.lower() == "auto":
                     result = "auto"
-                    
+
                 proto_settings[opt] = result
-                
+
             if self.has_option(section, service + "_auth"):
                 opt = service + "_auth"
                 result = self.__expand_vars(self.get(section, opt))
-                
+
                 if result.lower() == "plaintext":
                     result = "cleartext"
                 elif result.lower() == "encrypted":
@@ -700,7 +731,7 @@ class Config(object, ConfigParser.RawConfigParser):
                     if service == "smtp":
                         result = "smtp-after-pop"
                 # TODO: we allow bogus keys/values.
-                
+
                 proto_settings[opt] = result
 
             if self.has_option(section, service + "_auth_identity"):
@@ -710,16 +741,30 @@ class Config(object, ConfigParser.RawConfigParser):
             else:
                 emaillocalpart = self.__replace_makro("%u")
                 proto_settings[service + "_auth_identity"] = emaillocalpart
-            
+
             if self.has_option(section, service + "_expiration_date"):
                 opt = service + "_expiration_date"
                 result = self.__expand_vars(self.get(section, opt))
                 dt = parser.parse(result, fuzzy=True)
                 proto_settings[opt] = dt.strftime("%Y%m%d")
-                
+
             if self.has_option(section, service + "_refresh_ttl"):
                 opt = service + "_refresh_ttl"
                 result = self.get(section, opt)
+                proto_settings[opt] = result
+
+            if self.has_option(section, service + "_domain_required"):
+                opt = service + "_domain_required"
+                result = self.get(section, opt)
+                if result.lower() in TRUE:
+                    proto_settings[opt] = "on"
+                else:
+                    proto_settings[opt] = "off"
+
+            if self.has_option(section, service + "_domain_name"):
+                opt = service + "_domain_name"
+                result = self.__expand_vars(self.get(section, opt))
+                result = self.__replace_makro(result)
                 proto_settings[opt] = result
 
             if service == "smtp":
@@ -729,12 +774,12 @@ class Config(object, ConfigParser.RawConfigParser):
 
                     if author == "%s":
                         proto_settings[opt] = self.__emailaddress
-                    
+
                 if self.has_option(section, service + "_default"):
                     try:
                         opt = service + "_default"
                         tmp = self.__expand_vars(self.get(section, opt))
-                        if tmp.lower() in ("yes", "true", "1"):
+                        if tmp.strip().lower() in TRUE:
                             result = "Yes"
                         else:
                             result = "No"
@@ -743,16 +788,17 @@ class Config(object, ConfigParser.RawConfigParser):
                         pass
 
         return proto_settings
-    
-    def create_list(self, value):
+
+    @staticmethod
+    def create_list(value):
         result = value.split()
-        
+
         if len(result) > 1:
             for i, item in enumerate(result):
                 result[i] = item.split(",")[0]
-                
+
         return result
-    
+
     def __replace_makro(self, expression):
         if "%u" in expression:
             user = self.__emailaddress.split("@")[0]
@@ -770,39 +816,39 @@ class Config(object, ConfigParser.RawConfigParser):
         # do we have some dynamic variables?
         if len(self.__vars) == 0:
             return expression
-        
+
         def repl(mobj):
-            if self.__vars.has_key(mobj.group(1)):
-                result = self.__vars[mobj.group(1)]
-                
+            if mobj.group(1) in self.__vars:
+                _result = self.__vars[mobj.group(1)]
+
                 if mobj.group(2) is not None:
                     macro = mobj.group(2)[1:]
-                    
+
                     if self.debug:
                         logging.debug("__expand_vars()->macro=%s" % macro)
-                        
-                    if "@" in result:
+
+                    if "@" in _result:
                         if macro == "%u":
-                            return result.split("@")[0]
+                            return _result.split("@")[0]
                         if macro == "%d":
-                            return result.split("@")[1]
+                            return _result.split("@")[1]
                         if macro == "%s":
-                            return result
-                        
-                        result = result.split("@")[1]
-                        
+                            return _result
+
+                        _result = _result.split("@")[1]
+
                     # now the macro may only be part of a FQDN hostname
-                    if "." in result:
-                        dcs = result.split(".")
+                    if "." in _result:
+                        dcs = _result.split(".")
                         if macro in ("%1", "%2", "%3", "%4", "%5",
                                      "%6", "%7", "%8", "%9"):
                             i = int(macro[1])
                             if len(dcs) < i:
                                 return ""
-                            
+
                             return dcs[-i]
-                    
-                return result
+
+                return _result
             else:
                 # we always must expand variables. Even if it is the empty
                 # string
@@ -810,14 +856,14 @@ class Config(object, ConfigParser.RawConfigParser):
 
         result = re.sub(r"\$\{(\w+)(:%[sud1-9])?\}",
                         repl,
-                        unicode(expression, "utf-8"),
+                        expression,
                         re.UNICODE)
-     
+
         if self.debug:
             logging.debug("__expand_vars()->result=%s" % result)
-            
+
         return result
-        
+
     def __find_section(self, domain):
         l = self.sections()
         for section in iter(l):
@@ -825,45 +871,48 @@ class Config(object, ConfigParser.RawConfigParser):
                 return section
 
         raise NoSectionError(domain)
-        
-    def get_provider(self):
+
+    @property
+    def provider(self):
         return self.__automx["provider"]
-    provider = property(fget=get_provider)
 
-    def get_domain(self):
+    @property
+    def openssl(self):
+        return self.__automx['openssl']
+
+    @property
+    def domain(self):
         return self.__domain
-    domain = property(fget=get_domain)
 
-    def get_cn(self):
+    @property
+    def cn(self):
         return self.__cn
-    cn = property(fget=get_cn)
 
-    def get_password(self):
+    @property
+    def password(self):
         return self.__password
-    password = property(fget=get_password)
-    
-    def get_emailaddress(self):
+
+    @property
+    def emailaddress(self):
         return self.__emailaddress
-    emailaddress = property(fget=get_emailaddress)
-    
-    
+
+
 class Memcache(object):
-    
     def __init__(self, config, environ):
         self.__config = config
         self.__environ = environ
-                
+
         # Memcache usage is optional
         self.__has_memcache = use_memcache
 
         self.__found = False
         self.__client = None
         self.__current = 0
-        
+
         try:
             if use_memcache:
                 self.__mc = memcache.Client([config.get("automx", "memcache")])
-        except ValueError, e:
+        except ValueError as e:
             logging.warning("Memcache misconfigured: ", e)
             self.__has_memcache = False
         except NoOptionError:
@@ -883,7 +932,7 @@ class Memcache(object):
         if self.__config.has_option("automx", "memcache_ttl"):
             try:
                 ttl = self.__config.getint("automx", "memcache_ttl")
-            except ValueError, e:
+            except ValueError as e:
                 logging.warning("Memcache <memcache_ttl>, using default: ", e)
                 ttl = 600
         else:
@@ -893,7 +942,7 @@ class Memcache(object):
             self.__current += 1
 
         self.__mc.set(self.__client, self.__current, time=ttl)
-                                                            
+
     def allow_client(self):
         if not self.__has_memcache:
             return True
@@ -907,17 +956,17 @@ class Memcache(object):
         else:
             if self.__config.debug:
                 logging.debug("NOT TRUSTED %s" % self.__client)
-        
+
         if self.__config.has_option("automx", "client_error_limit"):
             try:
                 limit = self.__config.getint("automx", "client_error_limit")
-            except ValueError, e:
+            except ValueError as e:
                 logging.warning("Memcache <client_error_limit>, "
                                 "using default: ", e)
                 limit = 20
         else:
             limit = 20
-        
+
         result = self.__mc.get(self.__client)
 
         if result is not None:
@@ -933,15 +982,18 @@ class Memcache(object):
     def __is_trusted_network(self):
         if self.__config.has_option("automx", "rate_limit_exception_networks"):
             networks = self.__config.get("automx",
-                                        "rate_limit_exception_networks")
+                                         "rate_limit_exception_networks")
             networks = self.__config.create_list(networks)
         else:
             networks = ("127.0.0.1", "::1/128")
-        
+
+        if sys.version_info < (3,):
+            a = ipaddress.ip_address(self.__client.decode("utf-8"))
+        else:
+            a = ipaddress.ip_address(self.__client)
         for network in iter(networks):
-            a = ipaddr.IPAddress(self.__client)
-            n = ipaddr.IPNetwork(network)
-            if n.Contains(a):
+            n = ipaddress.ip_network(network)
+            if a in n:
                 if self.__config.debug:
                     logging.debug("FOUND %s, %s" % (a, n))
                 return True
