@@ -1,3 +1,10 @@
+automx (1.1.1-1) UNRELEASED; urgency=medium
+
+  * Non-maintainer upload
+  * Import new upstream release.
+
+ -- Philip Iezzi <pipo@iezzi.ch>  Thu, 30 Mar 2017 14:31:10 +0200
+
 automx (0.10.2-0.1) UNRELEASED; urgency=medium
 
   * Non-maintainer upload
