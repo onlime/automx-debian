@@ -1,9 +1,19 @@
+automx (1.1.2-1) UNRELEASED; urgency=medium
+
+  * Non-maintainer upload
+  * Import new upstream release.
+    + Fixes XML first-line-cut-hack to work with Outlook 2016
+    + Added support for cal/carddav
+    + Added support for eMClient for OX
+
+ -- Philip Iezzi <philip.iezzi@onlime.ch>  Wed, 26 Apr 2017 23:58:10 +0200
+
 automx (1.1.1-1) UNRELEASED; urgency=medium
 
   * Non-maintainer upload
   * Import new upstream release.
 
- -- Philip Iezzi <pipo@iezzi.ch>  Thu, 30 Mar 2017 14:31:10 +0200
+ -- Philip Iezzi <philip.iezzi@onlime.ch>  Thu, 30 Mar 2017 14:31:10 +0200
 
 automx (0.10.2-0.1) UNRELEASED; urgency=medium
 
